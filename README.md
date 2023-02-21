@@ -5,3 +5,5 @@ MDP is a Multi-Disciplinary Project whereby I worked together with a group of 8 
 The first task was to be able to go through a maze with 6 obstacles, and we have to find the shortest path to reach each of the 6 obstacles, and capture and predict the image on each obstacle correctly.
 
 The second task was to be able to go through 2 obstacles, with each obstacle having an image that points to the left or right, and the robot can capture, predict and move in the correct direction, before returning to its carpark safely.
+
+You may view our end product at this YouTube link: https://youtu.be/paCTqNHtBlM
