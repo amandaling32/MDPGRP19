@@ -1,0 +1,185 @@
+'''
+Communication protocols.
+They are pre-defined so it allows all subsystems to know the common ways of communication
+'''
+
+MESSAGE_SEPARATOR = '|'.encode()
+NEWLINE = '\n'.encode()
+
+ANDROID_HEADER = 'AND'.encode()
+STM_HEADER = 'ARD'.encode()
+ALGORITHM_HEADER = 'ALG'.encode()
+IMAGEREC_HEADER = 'IMG'.encode()
+
+class Status:
+    IDLE = 'idle'.encode()
+    IDENTIFYING_IMG = 'identifying image'.encode()
+    FASTEST_CAR = 'fastest car'.encode()
+
+
+class Android_Stm:
+    # f000 -> forward indefinitely
+    # f001 -> forward 1 cm
+    MOVE_FORWARD = "f".encode()[0] #'{"cat": "manual", "value": "f000"}'.encode()
+    MOVE_BACK = "b".encode()[0] #'{"cat": "manual", "value": "b000"}'.encode()
+    TURN_LEFT = "a".encode()[0] #'{"cat": "manual", "value": "a000"}'.encode()
+    TURN_RIGHT = "d".encode()[0] #'{"cat": "manual", "value": "d000"}'.encode()
+    STOP = "s".encode()[0] #'{"cat": "manual", "value": "s000"}'.encode()
+    DO_SHORTCUT_1 = 'F1'.encode()[0]
+    DO_SHORTCUT_2 = 'F2'.encode()[0]
+
+    ALL_MESSAGES = [
+        MOVE_FORWARD,
+        MOVE_BACK,
+        TURN_LEFT,
+        TURN_RIGHT,
+        STOP,
+        DO_SHORTCUT_1,
+        DO_SHORTCUT_2,
+    ]
+    
+    # for checklist only
+    MOVE_TO_OBSTACLE_SIDE = "o000".encode()
+
+
+class Algo_Stm:
+    MOVE_FORWARD = "f|100".encode() #'{"cat": "manual", "value": "f000"}'.encode()
+    MOVE_BACK = "b".encode() #'{"cat": "manual", "value": "b000"}'.encode()
+    TURN_LEFT = "a".encode() #'{"cat": "manual", "value": "a000"}'.encode()
+    TURN_RIGHT = "d".encode() #'{"cat": "manual", "value": "d000"}'.encode()
+    STOP = "s".encode() #'{"cat": "manual", "value": "s000"}'.encode()
+    DO_SHORTCUT_1 = 'F1'.encode()
+    DO_SHORTCUT_2 = 'F2'.encode()
+
+    ALL_MESSAGES = [
+        MOVE_FORWARD,
+        MOVE_BACK,
+        TURN_LEFT,
+        TURN_RIGHT,
+        STOP,
+        DO_SHORTCUT_1,
+        DO_SHORTCUT_2,
+    ]
+
+
+class Android_Algorithm:
+    START_IMAGE_REC = '{"cat":"control","value":"start"}'.encode() # start image rec # "SIR".encode()
+    #   remove all image_id
+    #   get back image_id and popu
+    START_FASTEST_CAR = "SFC".encode() #'{"cat": "manual", "value": "WN01"}'.encode() # start fastest car
+    # - if(isBigTurn){
+    #               if(isOutdoor){
+    #                   sendTurningModeCmdIntent("WN04");
+    #               }else{
+    #                   sendTurningModeCmdIntent("WN02");
+    #               }
+    #           }else{
+    #               if(isOutdoor){
+    #                   sendTurningModeCmdIntent("WN03");
+    #               }else{
+    #                   sendTurningModeCmdIntent("WN01");
+    #               }
+    SEND_ARENA = "SA".encode()
+                    #SA[obstaclearray]
+
+                    # '''SA|{"obstacles":
+                    # [{"x":4,"y":2,"obstacle_id":3,"image_id":"16","d":4},
+                    # {"x":4,"y":6,"obstacle_id":1,"image_id":"32","d":0},
+                    # {"x":2,"y":4,"obstacle_id":4,"image_id":"4","d":6},
+                    # {"x":6,"y":4,"obstacle_id":2,"image_id":"2","d":2}].encode()
+    #   - none, up, right, down, left:  -1, 0, 2, 4, 6
+    #   - robot direction: -1, 0, 2, 4, 6
+    #   - mode 1 if isOutdoorArena
+    #   - mode 0 if not isOutdoorArena
+
+
+class Android_RPi:
+    CALIBRATE_SENSOR = 'CS|'.encode()
+
+
+class Algorithm_Android:
+    MOVE_FORWARD = 'FS'.encode()[0]
+    TURN_LEFT = 'L'.encode()[0]
+    TURN_RIGHT = 'W'.encode()[0]
+    CALIBRATING_CORNER = 'C'.encode()[0]
+    SENSE_ALL = 'S'.encode()[0]
+    ALIGN_RIGHT = 'AR'.encode()[0]
+    ALIGN_FRONT = 'AF'.encode()[0]
+
+    MDF_STRING = 'M'.encode()[0]
+
+
+class Algorithm_RPi:
+    TAKE_PICTURE = 'T'.encode()[0]
+    IMAGE_REC_CMDS_COMPUTED = 'C'.encode()[0]
+
+
+class RPi_Android:
+    STATUS_IDENTIFYING_IMG = '{"status":"identifying image"}'.encode()
+    STATUS_FASTEST_CAR = '{"status":"fastest car"}'.encode()
+    STATUS_TURN_LEFT = '{"status":"turning left"}'.encode()
+    STATUS_TURN_RIGHT = '{"status":"turning right"}'.encode()
+    STATUS_IDLE = '{"status":"idle"}'.encode()
+    STATUS_TAKING_PICTURE = '{"status":"taking picture"}'.encode()
+    STATUS_CALIBRATING_CORNER = '{"status":"calibrating corner"}'.encode()
+    STATUS_SENSE_ALL = '{"status":"sense all"}'.encode()
+    STATUS_MOVING_FORWARD = '{"status":"moving forward"}'.encode()
+    STATUS_ALIGN_RIGHT = '{"status":"align right"}'.encode()
+    STATUS_ALIGN_FRONT = '{"status":"align front"}'.encode()
+
+    MOVE_UP = '{"move":[{"direction":"forward"}]}'.encode()
+    TURN_LEFT = '{"move":[{"direction":"left"}]}'.encode()
+    TURN_RIGHT = '{"move":[{"direction":"right"}]}'.encode()
+
+
+class RPi_Stm:
+    CALIBRATE_SENSOR = 'L|A|'.encode()
+    START_IMAGE_REC = 'E|'.encode()
+    START_FASTEST_CAR = 'F|'.encode()
+
+
+class RPi_Algorithm:
+    DONE_TAKING_PICTURE = 'T'.encode()
+    DONE_IMG_REC = 'I'.encode()
+
+
+class ImageRec_Android:
+    SEND_REC_IMG = '{"cat": "image-rec", "value": {"obstacle_id": 1, "image_id": 7 }}'.encode()
+# TARGET, <Obstacle Number>, <Target ID>
+#   - update image_id of obstacles 
+
+
+class Stm_Android:
+    UPDATE_LOCATION = '{"cat": "location", "value": {x: 5, y: 17, d: 2} }'.encode()
+# ROBOT, <x>, <y>, <direction in NSEW>
+#   - update robot location
+
+
+class Something_Android:
+    # Can't the below 2 be done via STARTED_TASK / FINISHED_TASK?
+    # change manual mode switch to off
+    # change manual mode switch to on
+
+    STARTED_TASK = '{"cat": status, "value":  running}'.encode()
+    #   - will stop timing and show time taken on tablet
+    FINISHED_TASK = '{"cat": status, "value":  finished}'.encode()
+    #   - disable all buttons on the tablet
+
+
+# These are for checklist strictly
+# The payload from Image Rec will be Ix, where x is image id.
+# If x is -1, image is not recognised.
+class Stm_ImageRec:
+    TAKE_PIC = 't'.encode()
+
+
+class ImageRec_Rpi:
+    IDENTIFIED_IMG = 'I'.encode()[0]
+
+class Stm:
+    READY_TO_TAKE_CMD = 'y'.encode()
+    FINISHED_FIRST_LEFT_TURN = 'yl'.encode()
+    FINISHED_FIRST_RIGHT_TURN = 'yr'.encode()
+    FINISHED_SECOND_LEFT_TURN = 'yll'.encode()
+    FINISHED_SECOND_RIGHT_TURN = 'yrr'.encode()
+    CAN_TAKE_PICTURE = 't'.encode()

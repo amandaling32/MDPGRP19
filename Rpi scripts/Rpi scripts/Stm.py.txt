@@ -1,0 +1,102 @@
+import serial
+
+from Config import SERIAL_PORT
+from Config import BAUD_RATE
+from Config import LOCALE
+from time import sleep
+
+
+class Stm_communicator:
+    def __init__(self, serial_port=SERIAL_PORT, baud_rate=BAUD_RATE):
+        self.serial_port = serial_port
+        self.baud_rate = baud_rate
+        self.connection = None
+
+    def connect(self):
+        count = 10000
+        while True:
+            retry = False
+
+            try:
+                if count >= 10000:
+                    pass
+                   # print('Now building connection with STM Board')
+
+                self.connection = serial.Serial(self.serial_port, self.baud_rate)
+
+                if self.connection is not None:
+                    print('Successfully connected with STM Board: ' + str(self.connection.name))
+                    retry = False
+
+            except Exception as error:
+                if count >= 10000:
+                    pass
+                   # print('Connection with STM Board failed: ' + str(error))
+
+                retry = True
+
+            if not retry:
+                break
+
+            if count >= 10000:
+                pass
+                # print('Retrying STM connection...')
+                count = 0
+
+            count += 1
+
+    def disconnect(self):
+        try:
+            if self.connection is not None:
+                self.connection.close()
+                self.connection = None
+
+                print('Successfully closed connection with STM')
+
+        except Exception as error:
+            print('STM close connection failed: ' + str(error))
+
+    def read(self):
+        try:
+            message = self.connection.readline()
+            #print(self.connection.read())
+            #sleep(0.03)
+            #print(self.connection.read().strip())
+
+            #message = self.connection.readall().strip()
+            print('From STM:')
+            print(message)
+
+            if len(message) > 0:
+                return message
+
+            return None
+
+        except Exception as error:
+            print('STM read failed: ' + str(error))
+            raise error
+
+    def write(self, message):
+        try:
+            self.connection.write(message)
+            print('To STM:')
+            print(message)
+
+        except Exception as error:
+            print('STM write failed: ' + str(error))
+            raise error
+
+if __name__ == '__main__':
+    A = Stm_communicator()
+    A.connect()
+    #A.read()
+    # message = "d010".encode()
+    # A.write(message)
+    # print("STM script succesfully ran.")
+
+
+    while True:
+        inp = input("enter input: ")
+        #message = "f010"
+        A.write(inp.encode())
+        A.read()

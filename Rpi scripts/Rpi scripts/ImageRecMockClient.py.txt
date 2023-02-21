@@ -1,0 +1,21 @@
+import socket
+
+from Config import LOCALE, IMAGE_REC_SOCKET_BUFFER_SIZE, WIFI_IP, IMAGEREC_PORT
+
+s = socket.socket()
+
+#port = 12345
+
+s.connect((WIFI_IP, IMAGEREC_PORT))
+# while True:
+#     print(s.recv(1024).decode())
+#     pass
+#s.send('client says hi!'.encode())
+
+print(s.recv(1024).decode())
+s.send('image rec client says hi!'.encode())
+
+# print(s.recv(1024).decode())
+# print(s.recv(1024).decode())
+
+s.close()

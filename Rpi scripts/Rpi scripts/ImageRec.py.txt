@@ -1,0 +1,166 @@
+import socket
+
+from Config import LOCALE, IMAGE_REC_SOCKET_BUFFER_SIZE, WIFI_IP, IMAGEREC_PORT, STOPPING_IMAGE, IMAGE_WIDTH, IMAGE_HEIGHT, IMAGE_FORMAT
+
+from PIL import Image
+import numpy as np
+import imagezmq
+import time
+from picamera import PiCamera
+from picamera.array import PiRGBArray
+
+import struct
+import io
+
+from multiprocessing import Process, Value, Manager
+
+img_count = 0
+
+class ImageRec_communicator:
+    def __init__(self, host=WIFI_IP, port=IMAGEREC_PORT):
+        self.port = port
+        self.host = host
+
+        self.socket = None
+        self.address = None
+        self.client_sock = None
+
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        print('The port address is :', self.port)
+        print('The host address is :', self.host)
+        self.socket.bind((self.host, self.port))
+        self.socket.listen(2)
+        
+    def connect(self):
+        while True:
+            retry = False
+
+            try:
+                print('Connecting with Image Rec PC')
+
+                if self.client_sock is None:
+                    self.client_sock, self.address = self.socket.accept()
+                    print('Successfully connected with Image Rec PC: ' + str(self.address))
+                    # self.connection = self.client_sock.makefile('wb')
+                    # print("Makefile connection successful")
+                    retry = False
+                    
+#                     self.connection = self.socket.accept()[0].makefile('rb')
+#                     print("Connection successful")
+                
+            except Exception as error:
+                print('Connection with Image Rec failed: ' + str(error))
+
+                if self.client_sock is not None:
+                    self.client_sock.close()
+                    self.client_sock = None
+                retry = True
+
+            if not retry:
+                break
+            print("Retrying Image Rec connection...")
+    
+    def disconnect(self):
+        try:
+            if self.client_sock is not None:
+                self.client_sock.close()
+                self.client_sock = None
+
+            print("Image Rec disconnected Successfully")
+
+        except Exception as error:
+            print("Image Rec disconnect failed: " + str(error))
+
+    def read(self):
+        try:
+            
+            message = self.client_sock.recv(IMAGE_REC_SOCKET_BUFFER_SIZE)
+            # while True:
+            #     message = self.connection.readline()
+
+            if len(message) > 0:
+
+                print('Message From Image Rec:')
+                print(message)
+                return message
+
+        except Exception as error:
+            print('Image Rec read process failed: ' + str(error))
+            raise error
+
+    def write(self, message):
+        try:
+            print('To Image Rec:')
+            print(message)
+            self.client_sock.send(message.encode())
+
+        except Exception as error:
+            print('Image Rec write process failed: ' + str(error))
+            raise error
+        
+    def _take_pic(self):
+    
+        try:
+            self.connection = self.client_sock.makefile('wb')
+            print("Makefile connection successful")
+
+            with PiCamera() as camera:
+                camera.framerate=15
+                camera.resolution = (1920,1080)
+                
+                camera.start_preview()
+                time.sleep(2)
+                
+                start = time.time()
+                stream = io.BytesIO()
+                
+                i = 0
+                
+                for foo in camera.capture_continuous(stream, 'jpeg'):
+                    self.connection.write(struct.pack('<L', stream.tell()))
+                    self.connection.flush()
+                    stream.seek(0)
+                    self.connection.write(stream.read())
+                    i=i+1
+                    if i == 5:
+                        break
+                    stream.seek(0)
+                    stream.truncate()
+            self.connection.write(struct.pack('<L',0))
+        except Exception as error:
+            print('Image rec take pic failed: ' + str(error))
+            raise error
+        finally:
+            self.connection.close()
+        
+    def main(self):
+        # self.connect()
+        # print("Connection successful")
+        
+        self._take_pic()
+        print("Take pic successful")
+        
+        message = self.read()
+        print("Message successfully receved")
+
+        return message
+
+if __name__ == '__main__':
+    message = "Hello from Image rec"
+    A = ImageRec_communicator()
+    A.main()
+#     A.connect()
+#     print("Connection successful")
+#     message = A._take_pic() 
+#     A.write(message)
+#     print("Message successfully sent")
+#    Algorithm().write(message)
+#     A._take_pic()
+#     print("Take pic successful")
+    
+#     A.read()
+#     print("Message successfully receved")
+#     A._process_pic(pic)
+#     print("Process pic successful") 

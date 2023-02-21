@@ -1,0 +1,191 @@
+from Stm import Stm_communicator
+from ImageRec import ImageRec_communicator
+from Config import STOPPING_IMAGE, IMAGE_WIDTH, IMAGE_HEIGHT, IMAGE_FORMAT
+from Protocols import *
+import os
+
+from PIL import Image
+import numpy as np
+#import imagezmq
+import time
+from picamera import PiCamera
+from picamera.array import PiRGBArray
+
+
+import collections
+from multiprocessing import Process, Value, Manager
+
+img_count = 0
+
+class MultiProcessCommunicatorChecklist:
+    """
+    This is created strictly to clear the checklist task.
+    It will carry out multi-processing communication process between Image Rec and STM.
+    """
+    def __init__(self, image_processing_server_url: str=None):
+        """
+        Start the multiprocessing process and set up all the relevant variables
+        Upon starting, RPi will connect to individual devices in the following order
+        - Stm
+        - Image Rec
+        The multiprocessing queue will also be instantiated
+        """
+        print('Starting Multiprocessing Communication')
+
+        self.stm = Stm_communicator() # handles connection to Stm
+        self.image_rec = ImageRec_communicator() # handles connection to Image Rec
+
+        self.manager = Manager()
+
+        # messages from Stm_communicator and ImageRec_communicator are placed in this queue before being read
+        self.message_queue = self.manager.Queue()
+
+        self.read_stm_process = Process(target=self._read_stm)
+        self.read_image_rec_process = Process(target=self._read_image_rec)
+
+        self.write_process = Process(target=self._write_target)
+        
+    def start(self):        
+        try:
+            self.stm.connect()
+            self.image_rec.connect()
+
+            print('Connected to Stm and Android')
+
+            self.read_stm_process.start()
+            self.read_image_rec_process.start()
+            self.write_process.start()
+
+            print('Multiprocess communication session started')
+            
+        except Exception as error:
+            raise error
+        
+        # Entry point for the checklist
+        self.message_queue.put_nowait(self._format_for(
+                                            STM_HEADER, 
+                                            "f030".encode()
+        ))
+        self._allow_reconnection()
+
+    def _allow_reconnection(self):
+        print('RPi can reconnect now')
+
+        while True:
+            try:
+                if not self.read_stm_process.is_alive():
+                    self._reconnect_stm()
+                if not self.read_image_rec_process.is_alive():
+                    self._reconnect_image_rec()
+
+            except Exception as error:
+                print("Error during reconnection: ",error)
+                raise error
+
+    def _reconnect_stm(self):
+        self.stm.disconnect()
+        
+        self.read_stm_process.terminate()
+        self.read_image_rec_process.terminate()
+        self.write_process.terminate()
+
+        self.stm.connect()
+
+        self.read_stm_process = Process(target=self._read_stm)
+        self.read_stm_process.start()
+
+        self.read_image_rec_process = Process(target=self._read_image_rec)
+        self.read_image_rec_process.start()
+
+        self.write_process = Process(target=self._write_target)
+        self.write_process.start()
+
+        print('Successfully reconnected to stm')
+
+    def _reconnect_image_rec(self):
+        self.image_rec.disconnect()
+
+        self.read_stm_process.terminate()
+        self.read_image_rec_process.terminate()
+        self.write_process.terminate()
+
+        self.stm.connect()
+
+        self.read_stm_process = Process(target=self._read_stm)
+        self.read_stm_process.start()
+
+        self.read_image_rec_process = Process(target=self._read_image_rec)
+        self.read_image_rec_process.start()
+
+        self.write_process = Process(target=self._write_target)
+        self.write_process.start()
+
+        print('Successfully reconnected to image rec')
+
+    def _read_stm(self):
+        while True:
+            try:
+                message = self.stm.read()
+                
+                if message is None or len(message) <= 0:
+                    continue
+                if message == Stm_ImageRec.TAKE_PIC:
+                    self.message_queue.put_nowait(self._format_for(
+                                            IMAGEREC_HEADER, 
+                                            message))
+            except Exception as error:
+                print('Process read_stm failed: ' + str(error))
+                break    
+    
+    def _read_image_rec(self):
+        while True:
+            try:
+                message = self.image_rec.main()
+                if message is None or len(message) <= 0:
+                    continue
+                if message[0] == ImageRec_Rpi.IDENTIFIED_IMG:
+                    
+                    if message.decode()[1:] == "25" or message.decode()[1:] == "-1": # fail to identify
+
+                        # tell stm to continue exploring
+                        self.message_queue.put_nowait(self._format_for(
+                                                STM_HEADER, 
+                                                Android_Stm.MOVE_TO_OBSTACLE_SIDE))
+                    else:
+                        print("Woohoo! We recognised an image!")
+            except Exception as error:
+                print('Process read_image_rec failed: ' + str(error))
+                break  
+
+    def _write_target(self):
+        while True:
+            target = None
+            message = None
+            try:
+                if self.message_queue.empty() == False:
+                    message = self.message_queue.get_nowait()
+                    print(message)
+                    target, payload = message['target'], message['payload']
+                    print("target: " + str(target))
+                    print("payload: " + str(payload))
+
+                    if target == STM_HEADER:
+                        self.stm.write(payload)
+                    elif target == IMAGEREC_HEADER:
+                        self.image_rec._take_pic()
+                    else:
+                        print("Invalid header", target)
+            except Exception as error:
+                print('Process write_target failed: ' + str(error))
+                break
+
+    def _format_for(self, target, payload):
+        return {
+            'target': target,
+            'payload': payload,
+        }
+
+if __name__ == '__main__':
+    os.system("sudo hciconfig hci0 piscan")
+    multiprocess_communication_process = MultiProcessCommunicatorChecklist()
+    multiprocess_communication_process.start()

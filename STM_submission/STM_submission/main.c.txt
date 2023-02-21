@@ -1,0 +1,2291 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2022 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "cmsis_os.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include "oled.h"
+#include "math.h"
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+#define ADC_BUF_LEN 4096
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+ADC_HandleTypeDef hadc2;
+DMA_HandleTypeDef hdma_adc1;
+DMA_HandleTypeDef hdma_adc2;
+
+I2C_HandleTypeDef hi2c1;
+
+TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
+TIM_HandleTypeDef htim8;
+
+UART_HandleTypeDef huart3;
+DMA_HandleTypeDef hdma_usart3_rx;
+
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for motorTask */
+osThreadId_t motorTaskHandle;
+const osThreadAttr_t motorTask_attributes = {
+  .name = "motorTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
+/* Definitions for EncoderTask */
+osThreadId_t EncoderTaskHandle;
+const osThreadAttr_t EncoderTask_attributes = {
+  .name = "EncoderTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
+/* Definitions for directionTask */
+osThreadId_t directionTaskHandle;
+const osThreadAttr_t directionTask_attributes = {
+  .name = "directionTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
+/* Definitions for gyroTask */
+osThreadId_t gyroTaskHandle;
+const osThreadAttr_t gyroTask_attributes = {
+  .name = "gyroTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
+/* Definitions for directionQueue */
+osMessageQueueId_t directionQueueHandle;
+const osMessageQueueAttr_t directionQueue_attributes = {
+  .name = "directionQueue"
+};
+/* Definitions for ultraSonicTimer */
+osTimerId_t ultraSonicTimerHandle;
+const osTimerAttr_t ultraSonicTimer_attributes = {
+  .name = "ultraSonicTimer"
+};
+/* USER CODE BEGIN PV */
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
+static void MX_TIM8_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
+static void MX_USART3_UART_Init(void);
+static void MX_TIM1_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_TIM4_Init(void);
+static void MX_ADC2_Init(void);
+void StartDefaultTask(void *argument);
+void motorFunc(void *argument);
+void encoderFunc(void *argument);
+void directionFunc(void *argument);
+void gyroFunc(void *argument);
+void trigUltrasonic(void *argument);
+
+/* USER CODE BEGIN PFP */
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+// Define Global Variables
+uint32_t IC_Val1 = 0;
+uint32_t IC_Val2 = 0;
+uint32_t Difference = 0;
+uint8_t Is_First_Captured = 0;  // check for whether the first value is captured
+uint8_t distanceFront  = 0;
+uint8_t overFlowCount = 0;
+
+uint8_t aRxBuffer[20];
+// Refers to how many times the counter counts for each revolution of the wheel
+double encoder_count = 1320.0; //330 pulses (PPR) --> quadrature mode, means x4 since now have rising and falling edges from 2 channels
+int16_t motorOnA = 0;
+int16_t motorOnB = 0;
+int error = 0;
+
+
+/* Task 2 flags*/
+// For when to take picture
+int picFlag = 0;
+// For when to use ultrasonic sensor to stop the car from moving forward (ie dw it to happen midwat through gg arnd obs)
+int forwardFlag = 0;
+// For when to use side IR sensors to keep it from gg outside boundary
+int backToHome = 0;
+// To select which IR sensor value to track to adjust movement
+int IRLeftRight = 0;
+// Parking flag
+int parkingFlag = 0;
+// IR or Ultra flag - for determining if i hit boundary of carpark or not
+int IRultra = 0;
+
+// SidedistanceTracker
+double IRguide = 0;
+
+// Home distance tracker:
+double distanceF = 0;
+
+// Home distance tracker flag
+int ForwFlag = 0;
+
+uint8_t buff[20];
+
+// I2C Address in datasheet pg 14
+uint8_t ICMAddr = 0x68;
+
+// ADC & DMA for IR sensor
+uint16_t lengthLeft[ADC_BUF_LEN];
+uint16_t lengthRight[ADC_BUF_LEN];
+
+//For the IR sensors on the sides:
+double distanceLeft = 0;
+double distanceRight = 0;
+
+// Message buffer for instruction end:
+uint8_t chBuffer[4];
+
+// Signal to rpi for taking pic
+uint8_t takePicBuffer[4];
+
+// Signal to rpi for finishing left obstacle 1
+uint8_t leftOneBuffer[4];
+
+// Signal to rpi for finishing left obstacle 2
+uint8_t leftTwoBuffer[4];
+
+// Signal to rpi for finishing right obstacle 1
+uint8_t rightOneBuffer[4];
+
+// Signal to rpi for finishing right obstacle 2
+uint8_t rightTwoBuffer[4];
+
+long total_distancea = 0;
+long total_distanceb = 0;
+
+long global_x = 0;
+long global_y = 0;
+
+int SPEED = 2400; //indoor - 3000, outdoor - 2300 - task 1
+int turnSPEEDouter = 2000; // indoor - 3000, outdoor - 2000
+int turnSPEEDinner = 600; // 150 outdoor
+double total_angle = 0;
+
+// Define Motor Functions
+void motorStop(){
+	//Put wheels back in straight direction
+	htim1.Instance -> CCR4 = 150;
+	// Set pwm values to be 0
+	motorOnA = 0;
+	motorOnB = 0;
+	__HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_1, 0); //Modifying the comparison value for duty cycle
+	__HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, 0);
+}
+void motorBStop(){
+	HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_2);
+}
+void motorAStart(){
+	HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_1);
+}
+void motorBStart(){
+	HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_2);
+}
+void motorAForward(){
+	HAL_GPIO_WritePin(GPIOA, AIN2_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOA, AIN1_Pin, GPIO_PIN_SET);
+}
+void motorAReverse(){
+	HAL_GPIO_WritePin(GPIOA, AIN2_Pin, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(GPIOA, AIN1_Pin, GPIO_PIN_RESET);
+}
+void motorBForward(){
+	HAL_GPIO_WritePin(GPIOA, BIN2_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOA, BIN1_Pin, GPIO_PIN_SET);
+}
+void motorBReverse(){
+	HAL_GPIO_WritePin(GPIOA, BIN2_Pin, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(GPIOA, BIN1_Pin, GPIO_PIN_RESET);
+}
+
+void motorForward(int target_distance, int dir){
+
+	htim1.Instance -> CCR4 = 150;
+	if(dir == 1){
+		motorAForward();
+		motorBForward();
+	} else if(dir == -1) {
+		motorAReverse();
+		motorBReverse();
+	}
+
+    int pidVal;
+
+    total_angle = 0;
+    int PServoControl = 6;
+    double IServoControl = 0;
+
+    double PMotorControl = 0.05;
+    double IMotorControl = 0;
+    int Icount = 1;
+
+    double IRControl = 0;
+
+    double IRCarparkCheck = 0;
+    if (ForwFlag == 0){
+    	distanceF += distanceFront;
+    	ForwFlag = 1;
+    }
+
+    // Set PWM value
+	motorOnA = SPEED*dir;
+	motorOnB = motorOnA;
+	//osDelayUntil(10);
+
+	//If gg forward, then check if distance traveled forward will be correct
+	if (dir == 1 || dir == -1 && target_distance < 0){
+		if(target_distance < 0){
+			target_distance = target_distance * -1;
+			motorAForward();
+			motorBForward();
+			osDelayUntil(10);
+		}
+		while(1){
+			osDelayUntil(10);
+			// If on the way back to carpark, check which side then use IR sensor of that side to put it home
+			if(backToHome == 1 && parkingFlag == 0){
+				// Means using left sensor - gg back by right obs side
+				if(IRLeftRight == 0){
+					// Use right IR to check boundary of carpark
+					IRCarparkCheck = distanceRight;
+					if (distanceLeft <IRguide){
+						IRControl = IRguide - distanceLeft;
+					}
+					else if( distanceLeft > IRguide){
+						IRControl = IRguide - distanceLeft;
+					}
+					else{
+						IRControl = 0;
+					}
+				}
+				else{
+					// Use left IR for boundary of carpark
+					IRCarparkCheck = distanceLeft;
+					// If right IR hitting border, turn left in
+					if (distanceRight <IRguide){
+						IRControl = distanceRight - IRguide;
+					}
+					// if right IR too far, means im too left, so turn right a bit
+					else if (distanceRight > IRguide){
+						IRControl = distanceRight - IRguide;
+					}
+					else{
+						IRControl = 0;
+					}
+				}
+				pidVal = (int)(150 + 0.4*IRControl);
+			}
+			else{
+				// Using P & I controller
+				pidVal = (int)(150 + (total_angle*PServoControl + 0.30*(IServoControl/Icount)));
+			}
+			if(pidVal <= 140){
+				pidVal = 140;
+			}
+
+			if(pidVal >= 165){
+				pidVal = 165;
+			}
+			htim1.Instance -> CCR4 = pidVal;
+			osDelayUntil(11);
+			IServoControl += total_angle;
+
+			// If error is positive, means right side moving slower, means must increase pwm:
+			// Back wheel pid doesnt work well when wheels uneven
+/*
+			if (error >0){
+				if (motorOnB < 3100){
+					motorOnB += (error*PMotorControl + 0.05*(IMotorControl/Icount));
+				}
+				else if (motorOnA > 2900){
+					motorOnA -= (error*PMotorControl + 0.05*(IMotorControl/Icount));
+				}
+			}
+			else {
+				if (motorOnA < 3200){
+					motorOnA += (error*PMotorControl + 0.05*(IMotorControl/Icount));
+				}
+				else if (motorOnB > 2800){
+					motorOnB -= (error*PMotorControl + 0.05*(IMotorControl/Icount));
+				}
+			}
+*/
+			IMotorControl += error;
+			Icount+=1;
+			// For GUI direction control on android - checklist task - send 'f000' to go forward indefinitely
+			/*
+			if(target_distance == 0 && direction == 'f'){
+				break;
+			}*/
+			// If IR sensor detects obstacle under 110cm away, take picture and continue - task 2
+			if(distanceFront < 110 && picFlag == 0){
+				// transmit a bit to rpi to take pic
+				HAL_UART_Transmit(&huart3, (uint8_t *) &takePicBuffer, 2, 0xFFFF);
+				picFlag = 1;
+			}
+			// If otw back from big obs and i go outside the boundary of the carpark, use my inner IR to check that i went past
+			else if (backToHome == 1 && IRCarparkCheck < 45 && total_distancea + total_distanceb >= 2*(100/21.04f)*encoder_count){
+				IRultra = 0;
+				motorStop();
+				forwardFlag = 1;
+				break;
+			}
+			// If IR sensor detects obstacle under 50cm away, stop - task 2
+			else if(distanceFront < 50 && forwardFlag == 0){
+				// For task 2
+				if (backToHome == 1){
+					// Make sure i went past the obstacle
+					if (total_distancea + total_distanceb >= 2*(distanceF/21.04f)*encoder_count){
+						motorStop();
+						forwardFlag = 1;
+						IRultra = 1;
+						break;
+					}
+					else{
+						backToHome = 1;
+					}
+				}
+				else{
+					// transmit a bit to rpi to take pic
+					//HAL_UART_Transmit(&huart3, (uint8_t *) &takePicBuffer, 2, 0xFFFF);
+					// Stop car when near obstacle
+					motorStop();
+					forwardFlag = 1;
+					break;
+				}
+			}
+			else if (distanceFront < 10 && parkingFlag == 1){
+				motorStop();
+				parkingFlag = 0;
+				break;
+			}
+			// When reach required distance, stop
+			if(total_distancea >= (target_distance/21.04f)*encoder_count && total_distanceb >= (target_distance/21.04f)*encoder_count){
+				motorStop();
+				IRultra = 0;
+				break;
+			}
+		}
+	}
+	else{
+		while(1){
+			// Using P & I controller
+			pidVal = (int)(150 - (total_angle*PServoControl + 0.30*(IServoControl/Icount)));
+			if(pidVal <= 140){
+				pidVal = 140;
+			}
+
+			if(pidVal >= 165){
+				pidVal = 165;
+			}
+			htim1.Instance -> CCR4 = pidVal;
+			osDelayUntil(10);
+			IServoControl += total_angle;
+			Icount+=1;
+			/*
+			// If error is positive, means right side moving slower, means must increase pwm for right side:
+			if (error >0){
+				if (motorOnB < 5000){
+					// Using P & I controller to increase right side
+					motorOnB += (error*PMotorControl + 0.20*(IMotorControl/Icount));
+				}
+				else if (motorOnA > 2500){
+					// Using P & I controller to decrease left side
+					motorOnA -= (error*PMotorControl + 0.20*(IMotorControl/Icount));
+				}
+			}
+			else {
+				if (motorOnA < 5000){
+					// Using P & I controller to increase left side
+					motorOnA += (error*PMotorControl + 0.20*(IMotorControl/Icount));
+				}
+				else if (motorOnB > 2500){
+					// Using P & I controller to decrease right side
+					motorOnB -= (error*PMotorControl + 0.20*(IMotorControl/Icount));
+				}
+			}
+			*/
+			// For GUI controlling thingy
+			/*if(target_distance == 0 && direction == 'b'){
+				break;
+			}*/
+			// When reach required distance, stop
+			if(-1 * total_distancea >= (target_distance/21.04f)*encoder_count && -1 * total_distanceb >= (target_distance/21.04f)*encoder_count){
+			//else if((-(total_distancea+total_distanceb)) >= 2*(target_distance/21.04f)*encoder_count){
+				motorStop();
+				break;
+			}
+		}
+	}
+	// Calculate the x & y displacement for that 1 forward command
+	global_x += ((total_distancea+total_distanceb)/(2*encoder_count/21.04f)) * sin(total_angle *(3.14/180));
+	global_y += ((total_distancea+total_distanceb)/(2*encoder_count/21.04f)) * cos(total_angle *(3.14/180));
+
+	// Reset distance travelled and error calculations for servo and motor
+	total_distancea = 0;
+	total_distanceb = 0;
+	error = 0;
+	IServoControl = 0;
+	IMotorControl = 0;
+	Icount = 1;
+	osDelayUntil(10);
+	htim1.Instance -> CCR4 = 150;
+
+}
+
+
+void motorRight(int target_angle){
+		motorAForward();
+		motorBForward();
+		htim1.Instance -> CCR4 = 208;
+		osDelayUntil(10);
+		double Icontrol = 0;
+		total_angle =  0;
+		//
+		motorOnA = turnSPEEDouter;
+		motorOnB = turnSPEEDinner;
+		/*
+		if(target_angle == 0 && direction == 'd'){
+			Icontrol = 0;
+		}*/
+		//else{
+		// outdoor - 1.04 , indoor - 1.10
+			while((total_angle) > (-1*target_angle)){
+				// If IR sensor detects obstacle under 15cm away, stop
+				if(distanceFront < 10 && parkingFlag == 1){
+					motorStop();
+					break;
+				}
+				/*
+				if(distanceFront < 10){
+					//This is for telling rpi to take a picture
+					//uint8_t ch = 't';
+					//HAL_UART_Transmit(&huart3, (uint8_t *) &ch, 1, 0xFFFF);
+
+					// Stop car when near obstacle
+					motorStop();
+					//motorBack(10);
+					break;
+				}*/
+				osDelayUntil(10);
+			}
+			motorStop();
+			htim1.Instance -> CCR4 = 150;
+		//}
+		// Calculate the x & y displacement for that 1 right command
+		global_x += ((total_distancea+total_distanceb)/(2*encoder_count/21.04f)) / (-35 *(3.14/180));
+		global_y += ((total_distancea+total_distanceb)/(2*encoder_count/21.04f)) / cos(total_angle *(3.14/180)) / 1.3;
+		total_distancea = 0;
+		total_distanceb = 0;
+
+}
+void motorLeft(int target_angle){
+		motorAForward();
+		motorBForward();
+		htim1.Instance -> CCR4 =  100;
+		osDelayUntil(10);
+		total_angle = 0;
+
+		motorOnA = turnSPEEDinner;
+		motorOnB = turnSPEEDouter;
+		//double Icontrol = 0;
+		/*
+		if(target_angle == 0 && direction == 'a'){
+			Icontrol = 0;
+		}*/
+		//else{
+			while(total_angle < target_angle){
+				// If IR sensor detects obstacle under 15cm away, stop
+				if(distanceFront < 10 && parkingFlag == 1){
+					motorStop();
+					break;
+				}
+				/*
+				if(distanceFront < 10){
+					//This is for telling rpi to take a picture
+					//uint8_t ch = 't';
+					//HAL_UART_Transmit(&huart3, (uint8_t *) &ch, 1, 0xFFFF);
+
+					// Stop car when near obstacle
+					motorStop();
+					//motorBack(10);
+					break;
+				}*/
+				osDelayUntil(10);
+			}
+			motorStop();
+			htim1.Instance -> CCR4 = 150;
+		//}
+		// Calculate the x & y displacement for that 1 left command
+		global_x += ((total_distancea+total_distanceb)/(2*encoder_count/21.04f)) * (28 *(3.14/180));
+		global_y += ((total_distancea+total_distanceb)/(2*encoder_count/21.04f)) * cos(total_angle *(3.14/180)) / 1.3;
+		total_distancea = 0;
+		total_distanceb = 0;
+
+}
+
+void backRight(int target_angle){
+		htim1.Instance -> CCR4 = 205;
+		motorAReverse();
+		motorBReverse();
+		total_angle = 0;
+		motorOnA = -1 * turnSPEEDouter;
+		motorOnB = -1 * turnSPEEDinner;
+		while(total_angle < target_angle){
+			osDelayUntil(10);
+		}
+		motorStop();
+		total_distancea = 0;
+		total_distanceb = 0;
+		htim1.Instance -> CCR4 = 150;
+
+}
+void backLeft(int target_angle){
+		htim1.Instance -> CCR4 =  100;
+		motorAReverse();
+		motorBReverse();
+		total_angle = 0;
+		motorOnA = -1 * turnSPEEDinner;
+		motorOnB = -1 * turnSPEEDouter;
+		while(total_angle > -1*(target_angle)){
+			osDelayUntil(10);
+		}
+		motorStop();
+		total_distancea = 0;
+		total_distanceb = 0;
+		htim1.Instance -> CCR4 = 150;
+}
+
+void motorBack(int target_distance){
+		htim1.Instance -> CCR4 = 150;
+		motorForward(target_distance, -1);
+}
+
+// For Gyroscope
+void readByte(uint8_t addr, uint8_t* data){
+	buff[0] = addr;
+	//hi2c1 is master, ICMAddr is slave (gyroscope at 0x68 << 1 bec the upper seven bit)
+	HAL_I2C_Master_Transmit(&hi2c1, ICMAddr<<1, buff, 1, 10);
+	HAL_I2C_Master_Receive(&hi2c1, ICMAddr<<1, data, 2, 20);
+}
+
+void writeByte(uint8_t addr, uint8_t data){
+	buff[0] = addr;
+	buff[1] = data;
+	HAL_I2C_Master_Transmit(&hi2c1, ICMAddr << 1, buff, 2, 20);
+}
+
+
+// https://invensense.tdk.com/wp-content/uploads/2016/06/DS-000189-ICM-20948-v1.3.pdf Gyroscope Datasheet
+void gyroStart(){
+	// PWR_MGMT_2 - Initialize Accelerometer
+	writeByte(0x07, 0x07);
+	osDelayUntil(10);
+	// PWR_MGMT_2 - Initialize Gyroscope
+	writeByte(0x07, 0x00);
+	osDelayUntil(10);
+}
+
+void gyroInit(){
+	// PWR_MGMT_1 - Initialize clk source
+	writeByte(0x06, 0x80);
+	osDelayUntil(10);
+	// USER_CTRL - Enables DMP & FIFO
+	writeByte(0x03, 0xC0);
+	osDelayUntil(10);
+	// PWR_MGMT_2 - Initialize Accelerometer
+	writeByte(0x07, 0x07);
+	osDelayUntil(10);
+	// PWR_MGMT_1 - Autoset clk source
+	writeByte(0x06, 0x01);
+	osDelayUntil(10);
+	// REG_BANK_SEL - Sel user bank 2
+	writeByte(0x7F, 0x20);
+	osDelayUntil(10);
+	// GYRO_CONFIG_1 - Set sensitivity/scaling for gyroscope
+	writeByte(0x01, 0x2F);
+	osDelayUntil(10);
+	// GYRO_SMPLRT_DIV - Sample rate divider - controls sensor data output (1.1kHz / 1+0)
+	writeByte(0x0, 0x00);
+	osDelayUntil(10);
+	// ACCEL_CONFIG - Set sensitivity/scaling for Accelerometer
+	writeByte(0x14, 0x11);
+	osDelayUntil(10);
+	// REG_BANK_SEL - Sel user bank 0
+	writeByte(0x7F, 0x00);
+	osDelayUntil(10);
+	// PWR_MGMT_2 - Initialize Gyroscope
+	writeByte(0x07, 0x00);
+	osDelayUntil(10);
+	/*
+	// FIFO_EN_2 - Write gyro z to fifo at sample rate
+	writeByte(0x67, 0x08);
+	osDelayUntil(10);
+	*/
+}
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_DMA_Init();
+  MX_TIM8_Init();
+  MX_TIM2_Init();
+  MX_TIM3_Init();
+  MX_USART3_UART_Init();
+  MX_TIM1_Init();
+  MX_I2C1_Init();
+  MX_ADC1_Init();
+  MX_TIM4_Init();
+  MX_ADC2_Init();
+  /* USER CODE BEGIN 2 */
+  OLED_Init();
+
+  // For messages
+  // Message buffer for instruction end:
+  chBuffer[0] = 'y';
+  chBuffer[1] = '\n';
+
+  // Signal for taking pic
+  takePicBuffer[0] = 't';
+  takePicBuffer[1] = '\n';
+
+  // Signal for finishing left obstacle 1
+  leftOneBuffer[0] = 'y';
+  leftOneBuffer[1] = 'l';
+  leftOneBuffer[2] = '\n';
+
+  // Signal for finishing left obstacle 2
+  leftTwoBuffer[0] = 'y';
+  leftTwoBuffer[1] = 'l';
+  leftTwoBuffer[2] = 'l';
+  leftTwoBuffer[3] = '\n';
+
+  // Signal for finishing right obstacle 1
+  rightOneBuffer[0] = 'y';
+  rightOneBuffer[1] = 'r';
+  rightOneBuffer[2] = '\n';
+
+  // Signal for finishing right obstacle 2
+  rightTwoBuffer[0] = 'y';
+  rightTwoBuffer[1] = 'r';
+  rightTwoBuffer[2] = 'r';
+  rightTwoBuffer[3] = '\n';
+
+  // For DC Motor
+  motorAStart();
+  motorBStart();
+
+  // For servo
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
+
+  //For receiving initial direction/magnitude instructions
+  HAL_UART_Receive_DMA(&huart3, (uint8_t *) aRxBuffer, 4);
+
+  //For starting ADC/DMA -- Used to convert IR sensor value
+  // HAL_ADC_Start_DMA(&hadc1, (uint32_t*)lengthFront, ADC_BUF_LEN);
+  HAL_TIM_Base_Start_IT(&htim4);
+  HAL_TIM_IC_Start_IT(&htim4, TIM_CHANNEL_1);
+  /* USER CODE END 2 */
+
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* Create the timer(s) */
+  /* creation of ultraSonicTimer */
+  ultraSonicTimerHandle = osTimerNew(trigUltrasonic, osTimerPeriodic, NULL, &ultraSonicTimer_attributes);
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* Create the queue(s) */
+  /* creation of directionQueue */
+  directionQueueHandle = osMessageQueueNew (8, sizeof(uint8_t)*8, &directionQueue_attributes);
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  // Note, need to edit the size of the handler above to be * 8 to buffer 2 buffer messages, * 12
+  // to buffer 3 messages etc
+  // eg: directionQueueHandle = osMessageQueueNew (2, sizeof(uint8_t) * 8, &directionQueue_attributes);
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of defaultTask */
+  // defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* creation of motorTask */
+  motorTaskHandle = osThreadNew(motorFunc, NULL, &motorTask_attributes);
+
+  /* creation of EncoderTask */
+  EncoderTaskHandle = osThreadNew(encoderFunc, NULL, &EncoderTask_attributes);
+
+  /* creation of directionTask */
+  directionTaskHandle = osThreadNew(directionFunc, NULL, &directionTask_attributes);
+
+  /* creation of gyroTask */
+  gyroTaskHandle = osThreadNew(gyroFunc, NULL, &gyroTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_10;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief ADC2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC2_Init(void)
+{
+
+  /* USER CODE BEGIN ADC2_Init 0 */
+
+  /* USER CODE END ADC2_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC2_Init 1 */
+
+  /* USER CODE END ADC2_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc2.Instance = ADC2;
+  hadc2.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
+  hadc2.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc2.Init.ScanConvMode = DISABLE;
+  hadc2.Init.ContinuousConvMode = ENABLE;
+  hadc2.Init.DiscontinuousConvMode = DISABLE;
+  hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc2.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc2.Init.NbrOfConversion = 1;
+  hadc2.Init.DMAContinuousRequests = ENABLE;
+  hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_11;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC2_Init 2 */
+
+  /* USER CODE END ADC2_Init 2 */
+
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 160;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 1000;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+  HAL_TIM_MspPostInit(&htim1);
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 65535;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 10;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 10;
+  if (HAL_TIM_Encoder_Init(&htim2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 0;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 65535;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 0;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 0;
+  if (HAL_TIM_Encoder_Init(&htim3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 0;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 65535;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_IC_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_BOTHEDGE;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim4, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
+
+}
+
+/**
+  * @brief TIM8 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM8_Init(void)
+{
+
+  /* USER CODE BEGIN TIM8_Init 0 */
+
+  /* USER CODE END TIM8_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  /* USER CODE BEGIN TIM8_Init 1 */
+
+  /* USER CODE END TIM8_Init 1 */
+  htim8.Instance = TIM8;
+  htim8.Init.Prescaler = 0;
+  htim8.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim8.Init.Period = 7199;
+  htim8.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim8.Init.RepetitionCounter = 0;
+  htim8.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim8, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim8, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim8, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim8, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim8, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM8_Init 2 */
+
+  /* USER CODE END TIM8_Init 2 */
+
+}
+
+/**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+  /* DMA2_Stream2_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOE_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOE, OLED_SCL_Pin|OLED_SDA_Pin|OLED_RST_Pin|OLED_DC_Pin
+                          |LED3_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, AIN2_Pin|AIN1_Pin|BIN1_Pin|BIN2_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(trig_GPIO_Port, trig_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : OLED_SCL_Pin OLED_SDA_Pin OLED_RST_Pin OLED_DC_Pin
+                           LED3_Pin */
+  GPIO_InitStruct.Pin = OLED_SCL_Pin|OLED_SDA_Pin|OLED_RST_Pin|OLED_DC_Pin
+                          |LED3_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : AIN2_Pin AIN1_Pin */
+  GPIO_InitStruct.Pin = AIN2_Pin|AIN1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : BIN1_Pin BIN2_Pin */
+  GPIO_InitStruct.Pin = BIN1_Pin|BIN2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : trig_Pin */
+  GPIO_InitStruct.Pin = trig_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(trig_GPIO_Port, &GPIO_InitStruct);
+
+}
+
+/* USER CODE BEGIN 4 */
+// Triggered when UART DMA is full -- means buffer has successfully recieved 4 characters
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
+	//UNUSED(huart);
+
+	// Used to check if stm recieved the same instructions
+	//HAL_UART_Transmit(&huart3, (uint8_t *) aRxBuffer, 4, 0xFFFF);
+
+	UNUSED(huart);
+	// Sending x,y coordinates (draft but not accurate because of gyro drift)
+	// global_x --> += distance * sin(total_angle);
+	// global_y --> += distance * cos(total_angle);
+
+	// Using message queue to store instructions to pass to direction task
+	osMessageQueuePut(directionQueueHandle,(uint8_t *) &aRxBuffer,1, 0);
+
+	// Receiving new direction instruction from raspberryPi/Computer
+	//HAL_UART_Receive_IT(&huart3, (uint8_t *) aRxBuffer, 4);
+	HAL_UART_Receive_DMA(&huart3, (uint8_t *) aRxBuffer, 4);
+}
+// For IR sensor, but realised Ultrasonic sensor is more reliable lol
+// i just have it empty bec in the end i just read directly from the buffer itself,
+// rather than process the data in here when it is full and hog the cpu
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
+	// If ADC1 fills up the buffer fully using DMA, then trigger this
+	// https://deepbluembedded.com/stm32-adc-read-example-dma-interrupt-polling/
+	/*
+	if(hadc == &hadc1){
+		uint8_t distF[20];
+		distanceFront = 0;
+		double distFront = 0;
+		// lengthFront gives voltage value -- finding average voltage value from 4096 samples
+		for(int i = 0; i< 512; i++){
+			distFront += lengthFront[i];
+		}
+		// Getting average voltage value
+		distFront  = distFront / 512.0;
+		// Converting Voltage value to distance value in cm (need calibrate, based on SharpIR library)
+		// https://www.makerguides.com/sharp-gp2y0a21yk0f-ir-distance-sensor-arduino-tutorial/
+		//distFront = distFront/1000.0;
+		// y=74.1771⋅(0.4976)x to calibrate ir distance https://atozmath.com/CONM/LeastSquare.aspx?q=1
+		distanceFront = 38.5469 * pow(distFront/1000.0, -1.2355);
+		// distanceFront = 29.988 * pow(distFront/1000.0 , -1.173);
+		if (distanceFront > 120){
+			distanceFront = 120.0;
+		}
+		sprintf(distF, "IRD:%.3f\0", (double) distanceFront);
+		OLED_ShowString(40,5,distF);
+		OLED_Refresh_Gram();
+		HAL_ADC_Stop_DMA(hadc);
+	}*/
+}
+// For Ultrasonic sensor when recieve signal on echo pin
+// Reference: https://controllerstech.com/hcsr04-ultrasonic-sensor-and-stm32/
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim){
+	// If timer 4 triggered, means echo pin recieved rising edge
+	if (Is_First_Captured==0) // if the first value is not captured
+		{
+			overFlowCount = 0;
+			IC_Val1 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1); // read the first value
+			Is_First_Captured = 1;  // set the first captured as true
+		}
+
+	else if (Is_First_Captured==1)   // if the first is already captured
+		{
+			IC_Val2 = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);  // read second value
+
+			if (IC_Val2 > IC_Val1)
+			{
+				Difference = IC_Val2-IC_Val1 + 65535*overFlowCount;
+			}
+
+			else if (IC_Val1 > IC_Val2)
+			{
+				Difference = (65535*overFlowCount - IC_Val1) + IC_Val2;
+			}
+			// Time (t) = time difference in ticks * time per tick --> Difference * (1/16Mhz)
+			// Distance = speed * Time / 2= 340(speed of sound) * t / 2 (you only care about the 1 way distance rather than 2 way since sounds reflects
+			// so divide by 2)
+			distanceFront = Difference * 0.0010625;
+			Is_First_Captured = 0; // set it back to false
+			__HAL_TIM_SET_COUNTER(htim, 0);  // reset the counter
+			// Dont want the pin to track other signals
+			__HAL_TIM_DISABLE_IT(&htim4, TIM_IT_CC1);
+
+		}
+
+}
+// For checking if timer 4 has an overflow:
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef* htim)
+{
+	if (htim == &htim4){
+		overFlowCount++;
+	}
+}
+
+/* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  //uint8_t ch = 'A';
+  for(;;)
+  {
+	//HAL_UART_Transmit(&huart3, (uint8_t *) &ch, 1, 0xFFFF);
+	// Note: dont put stuff in default task as its the highest priority and ur other tasks dont get to run
+	osDelay(1000);
+  }
+  	//osDelay(1000);
+  /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_motorFunc */
+/**
+* @brief Function implementing the motorTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_motorFunc */
+void motorFunc(void *argument)
+{
+  /* USER CODE BEGIN motorFunc */
+
+  int16_t pwmValA, pwmValB;
+  double distLeft = 0;
+  double distRight = 0;
+  /* Infinite loop */
+  for(;;)
+  {
+	  pwmValA = motorOnA;
+	  pwmValB = motorOnB;
+
+	 //If pwm value calculated is negative, means need to reverse
+	  if(pwmValA < 0) {
+		  pwmValA = -1*pwmValA;
+	  }
+	  if(pwmValB < 0){
+		  pwmValB = -1*pwmValB;
+	  }
+
+	  // Cap max pwm value to 7000
+	  if(pwmValA >= 7000){
+		  pwmValA = 7000;
+	  }
+
+	  if(pwmValB >= 7000){
+		  pwmValB = 7000;
+	  }
+	  //OLED_ShowNumber(40,50,pwmValA, 4,16);
+	  //OLED_ShowNumber(0,50,pwmValB, 4,16);
+	  // Duty cycle = pulseWidth * 100 / Period (
+	  // 100% duty cycle is PWM = 7199, setting pwmValA/B represents the value which the timer
+	  // Compares register value (pwmValA/B) with the counter value, when counter counts up to
+	  // that value, trigger interrupt to make PWM signal low for the output pin (PC6 & PC7), when timer hits
+	  // max period (7199) means go back high and start again --> higher pwm value means higher duty cycle
+	  __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_1, pwmValA); //Modifying the comparison value for duty cycle
+	  __HAL_TIM_SetCompare(&htim8, TIM_CHANNEL_2, pwmValB);
+
+	  // For IR sensor distance -- reading from DMA buffer
+
+	  distLeft = 0;
+	  distLeft += lengthLeft[0];
+	  distLeft += lengthLeft[1024];
+	  distLeft = distLeft / 2.0;
+	  distanceLeft = 38.5469 * pow(distLeft/1000.0, -1.2355);
+	  if (distanceLeft > 120){
+		  distanceLeft = 120;
+	  }
+
+	  distRight = 0;
+	  distRight += lengthRight[0];
+	  distRight += lengthRight[1024];
+	  distRight = distRight / 2.0;
+	  distanceRight = 38.5469 * pow(distRight/1000.0, -1.2355);
+
+	  if (distanceRight > 120){
+		  distanceRight = 120;
+	  }
+	  // Show distance from ultrasonic sensor
+	  OLED_ShowNumber(0,10,distanceFront, 4,16);
+
+	  // Show distance from left IR sensor
+	  OLED_ShowNumber(0,30,distanceLeft, 4,16);
+
+	  // Show distance from right IR sensor
+	  OLED_ShowNumber(40,50,distanceRight, 4,16);
+	  osDelayUntil(100);
+  }
+  /* USER CODE END motorFunc */
+}
+
+/* USER CODE BEGIN Header_encoderFunc */
+/**
+* @brief Function implementing the EncoderTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_encoderFunc */
+void encoderFunc(void *argument)
+{
+  /* USER CODE BEGIN encoderFunc */
+  /* Infinite loop */
+	/**/
+  HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
+  HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
+
+  int cnt2L, diffL;
+  int cnt2R, diffR;
+
+  uint32_t tick;
+  // Internal clock is 16Mhz for STM407, so 1 tick = 1/16mhz
+  tick = HAL_GetTick();
+
+  uint8_t speedL[20];
+  //uint8_t DIR[20];
+  uint8_t speedR[20];
+  int16_t dirL, dirR;
+  for(;;)
+  {
+	if(HAL_GetTick() - tick >= 10){
+		// Timer in encoder mode counts 4 each time a pulse is sent (quadrature mode with 2 channels)
+		cnt2L = __HAL_TIM_GET_COUNTER(&htim2);
+		cnt2R =  __HAL_TIM_GET_COUNTER(&htim3);
+		// If >32700 means counting backwards (0 to 65535 to down)
+		 if(cnt2L > 32700){
+			 dirL = 1;
+			 diffL = (65536 - cnt2L);
+			  } else {
+				 dirL = -1;
+				 diffL = cnt2L;
+		  }
+		 if(cnt2R > 32700){
+			  dirR = -1;
+			  diffR = (65536 - cnt2R);
+		  } else {
+			  dirR = 1;
+			  diffR = cnt2R;
+		  }
+		 // Offset for encoder reading error
+		 diffL /= 1.08;
+		 diffR /= 1.08;
+		 // Only when motor is on, then add encoder reading to total distance travelled
+		 if(motorOnA != 0 && motorOnB != 0){
+			  if(dirR == 1){
+			  total_distanceb += diffR;
+			  } else {
+				  total_distanceb -= diffR;
+			  }
+
+			  if(dirL == 1){
+			  total_distancea += diffL;
+			  } else {
+				  total_distancea -= diffL;
+			  }
+
+			  // Calculate difference between both wheels and get the error in readings
+
+			  if ((dirR == 1 && dirL == 1) || (dirR != 1 && dirL != 1)){
+			  	  error = (diffL - diffR);
+			  }
+		 }
+		//sprintf(speedL, "DistanceL:%5d\0", (total_distancea*21.04f)/330.0);
+		//OLED_ShowString(10,20,speedL);
+		//dir = __HAL_TIM_IS_TIM_COUNTING_DOWN(&htim2);
+		//sprintf(DIR, "Dir:%5d\0", dir);
+		//OLED_ShowString(10,30,DIR);
+
+		//sprintf(speedR, "DistanceR:%5d\0", (total_distanceb*21.04f)/330.0);
+		//OLED_ShowString(10,30,speedR);
+
+		// Reset counter for next reading
+		__HAL_TIM_SET_COUNTER(&htim2, 0);
+		__HAL_TIM_SET_COUNTER(&htim3, 0);
+		OLED_Refresh_Gram();
+
+	    tick = HAL_GetTick();
+	}
+	osDelayUntil(10);
+  }
+  /* USER CODE END encoderFunc */
+}
+
+/* USER CODE BEGIN Header_directionFunc */
+/**
+* @brief Function implementing the directionTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_directionFunc */
+void directionFunc(void *argument)
+{
+  /* USER CODE BEGIN directionFunc */
+  uint8_t xyCoord[20];
+  uint8_t directionTest[20];
+  char direction;
+  int magnitude;
+  // Software timer to send out trigger signal for ultrasonic periodically - task 2
+  osTimerStart(ultraSonicTimerHandle,120);
+
+  //For starting ADC/DMA -- Used to convert IR sensor value (left and right) - task 2
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)lengthLeft, ADC_BUF_LEN);
+  HAL_ADC_Start_DMA(&hadc2, (uint32_t*)lengthRight, ADC_BUF_LEN);
+
+  // Just make sure it always defaults to straight wheels when i reset stm
+  htim1.Instance -> CCR4 = 150;
+
+  /* Infinite loop */
+  for(;;)
+  {
+	 //If got instructions in queue, extract a command from queue and execute it
+  if(osMessageQueueGetCount(directionQueueHandle) != 0){
+	  	osMessageQueueGet(directionQueueHandle,(uint8_t *) &directionTest,1, 0);
+	  	OLED_ShowString(0,50,directionTest);
+	  	// Direction character is 1st element
+	  	direction = (char) directionTest[0];
+	  	// Magnitude is next 3 elements in buffer
+	  	magnitude = (int)(directionTest[1] - '0')*100 + (int)((char)directionTest[2] - '0')*10 + (int)(directionTest[3] - '0');
+		if(direction == 'f'){ // Forward - cmd: f025 - forward till 25cm
+			htim1.Instance -> CCR4 = 150;
+			motorForward(magnitude, 1);
+
+		}// Back - cmd: b030 - reverse till 30cm
+		if(direction == 'b'){
+			motorBack(magnitude);
+		}
+		// Left - cmd: a___ (ie. a090) - 90 degrees left turn
+		if(direction == 'a'){
+			motorForward(5, 1);
+			HAL_Delay(500);
+			motorLeft(79);
+			//motorBack(10);
+			// 3 pt turn
+			/*
+			motorLeft(50);
+			backRight(29);
+			motorStop();
+			motorForward(5, 1);
+			*/
+			//htim1.Instance -> CCR4 = 149;
+		}
+		// Right - cmd: a___ (ie. a090) - 90 degrees right turn
+		if(direction == 'd'){
+			//motorBack(5);
+			//HAL_Delay(200);
+			motorRight(79);
+			HAL_Delay(500);
+			motorBack(5);
+			//motorBack(10);
+			// motorForward(5 + gyroError*2,1);
+			// 3 pt turn
+			/*
+			motorRight(50);
+			backLeft(29);
+			motorStop();
+			motorForward(20, 1);*/
+			//htim1.Instance -> CCR4 = 149;
+		}
+		// Reverse Left
+		if(direction == 'q'){
+			// 3 pt turn
+			backLeft(79);
+			HAL_Delay(500);
+			motorBack(5);
+			/*
+			motorBack(20);
+			motorStop();
+			motorRight(magnitude/3);
+			backLeft(magnitude/1.5);
+			htim1.Instance -> CCR4 = 150;*/
+		}
+		// Reverse Right
+		if(direction == 'e'){
+			motorForward(5,1);
+			HAL_Delay(500);
+			backRight(79);
+			//motorForward(10,1);
+			/*
+			// 3 pt turn
+			motorBack(20);
+			motorStop();
+			motorLeft(magnitude/3);
+			backRight(magnitude/1.5);
+			htim1.Instance -> CCR4 = 150;*/
+		}
+		// Stop
+		if(direction == 's'){
+			motorStop();
+			htim1.Instance -> CCR4 = 150;
+			direction = 'x';
+		}
+		// For going around obstacle - checklist only
+		if(direction == 'o'){
+			//motorForward(90,1);
+			motorBack(42-distanceFront);
+			backLeft(35);
+			motorForward(25,1);
+			backLeft(35);
+			//motorRight(5);
+			motorForward(60,1);
+			motorLeft(210);
+			//motorBack(20);
+			motorStop();
+			// transmit a bit to rpi
+			// HAL_UART_Transmit(&huart3, (uint8_t *) &ch, 1, 0xFFFF);
+			htim1.Instance -> CCR4 = 149;
+		}
+		// For going around small obstacle on left side- task 2 only, big L for 2nd obs
+		if(direction == 'l'){
+			// Reduce speed for accurate reversing
+			SPEED = 1600;
+			// Move back from obs
+			motorBack(40-distanceFront);
+			osDelayUntil(500);
+			SPEED = 2400;
+			// Turn left
+			motorLeft(33);
+			osDelayUntil(500);
+			// Go forward to go past obs
+			motorForward(16,1);
+			osDelayUntil(500);
+			// To make it straight again
+			motorRight(77);
+			//HAL_Delay(500);
+			// Go forward to move past obs in path
+			motorForward(21,1);
+			osDelayUntil(500);
+			HAL_Delay(500);
+			osDelayUntil(500);
+			motorLeft(15);
+			osDelayUntil(500);
+			// Reverse right into path agn and make it straight
+			backRight(25);
+			HAL_Delay(500);
+			picFlag = 0;
+			// Enable ultrasonic sensor for forward command
+			forwardFlag = 0;
+			distanceF += distanceFront;
+			motorForward(150,1);
+			motorStop();
+			// transmit a bit to rpi
+			HAL_UART_Transmit(&huart3, (uint8_t *) &leftOneBuffer, 3, 0xFFFF);
+			htim1.Instance -> CCR4 = 149;
+		}
+		// For going around big obstacle on left side- task 2 only
+		if(direction == 'L'){
+			// Reduce speed for accurate reversing
+			SPEED = 1600;
+			// Back away from obstacle
+			motorBack(23-distanceFront);
+			// Increasing speed back to original level
+			SPEED = 2400;
+			turnSPEEDouter = 2000;
+			turnSPEEDinner = 600;
+			// Turn left 90 parallel to obs
+			motorLeft(32);
+			osDelayUntil(500);
+			backRight(43);
+			HAL_Delay(250);
+			osDelayUntil(500);
+			// Go past length of obs
+			motorForward(63,1);
+			osDelayUntil(500);
+			// Turn right 90 degrees to cover width of obs
+			motorRight(29);
+			backLeft(50);
+			osDelayUntil(500);
+			// Go past width
+			motorForward(68,1);
+			osDelayUntil(500);
+			HAL_Delay(250);
+			// Turn right to be parallel to obs
+			motorRight(77);
+			osDelayUntil(500);
+			HAL_Delay(250);
+			// Cover length of obs
+			motorForward(50,1);
+			osDelayUntil(500);
+			// Right turn 90 to head back to obs
+			motorRight(45);
+			osDelayUntil(500);
+			backLeft(33);
+			HAL_Delay(500);
+			osDelayUntil(1000);
+			// Increasing speed for going back
+			SPEED = 3500;
+			// Tracking the border distance
+			IRguide = distanceLeft;
+			// Straight back to obs
+			backToHome = 1;
+			IRLeftRight = 0;
+			motorForward(50,1);
+			osDelayUntil(500);
+			forwardFlag = 0;
+			motorForward(450,1);
+			osDelayUntil(500);
+			// Decreasing speed to go into carpark
+			SPEED = 3000;
+			if(IRultra == 0){
+				motorBack(70);
+				motorRight(40);
+				parkingFlag = 1;
+				motorForward(52,1);
+				motorLeft(35);
+				SPEED = 1600;
+				parkingFlag = 1;
+				forwardFlag = 1;
+				motorForward(150,1);
+				motorStop();
+			}
+			else{
+				// Turn into carpark
+				motorBack(50-distanceFront);
+				osDelayUntil(500);
+				parkingFlag = 1;
+				motorRight(40);
+				osDelayUntil(500);
+				parkingFlag = 1;
+				motorForward(25,1);
+				parkingFlag = 1;
+				osDelayUntil(500);
+				motorLeft(35);
+				osDelayUntil(500);
+				HAL_Delay(500);
+				SPEED = 1600;
+				parkingFlag = 1;
+				forwardFlag = 1;
+				motorForward(300,1);
+				motorStop();
+				picFlag = 0;
+			}
+			// transmit a bit to rpi
+			HAL_UART_Transmit(&huart3, (uint8_t *) &leftTwoBuffer, 4, 0xFFFF);
+			htim1.Instance -> CCR4 = 149;
+		}
+		// For going around small obstacle on right side- task 2 only ,big R for 2nd obs
+		if(direction == 'r'){
+			// Reduce speed for accurate reversing
+			SPEED = 1600;
+			// Move back from obs
+			motorBack(40-distanceFront);
+			osDelayUntil(500);
+			// Increasing speed back to original level
+			SPEED = 2400;
+			// Go right arnd obs
+			motorRight(32);
+			osDelayUntil(500);
+			// Go out forward
+			motorForward(29,1);
+			osDelayUntil(500);
+			// Turn left into path past obs
+			motorLeft(78);
+			osDelayUntil(500);
+			HAL_Delay(250);
+			// Over-compensate in
+			motorForward(20,1);
+			HAL_Delay(500);
+			osDelayUntil(500);
+			// Reverse left to get back straight
+			motorRight(10);
+			backLeft(37);
+			HAL_Delay(500);
+			picFlag = 0;
+			forwardFlag = 0;
+			distanceF += distanceFront;
+			motorForward(150,1);
+			motorStop();
+			// transmit a bit to rpi
+			HAL_UART_Transmit(&huart3, (uint8_t *) &rightOneBuffer, 3, 0xFFFF);
+			htim1.Instance -> CCR4 = 149;
+		}
+		// For going around small obstacle on left side- task 2 only, big L for 2nd obs
+		if(direction == 'R'){
+			// Reduce speed for accurate reversing
+			SPEED = 1600;
+			// Back away from obstacle
+			motorBack(23-distanceFront);
+			// Increasing speed back to original level
+			SPEED = 2400;
+			turnSPEEDouter = 2000;
+			turnSPEEDinner = 600;
+			// Turn left 90 parallel to obs
+			motorRight(20);
+			osDelayUntil(500);
+			backLeft(59);
+			osDelayUntil(500);
+			HAL_Delay(250);
+			// Go past length of obs
+			motorForward(55,1);
+			osDelayUntil(500);
+			// Turn right 90 degrees to cover width of obs
+			motorLeft(49);
+			osDelayUntil(500);
+			backRight(28);
+			osDelayUntil(500);
+			// Go past width
+			motorForward(72,1);
+			osDelayUntil(500);
+			HAL_Delay(250);
+			// Turn right to be parallel to obs
+			motorLeft(76);
+			osDelayUntil(500);
+			HAL_Delay(250);
+			// Cover length of obs
+			motorForward(66,1);
+			osDelayUntil(500);
+			// Right turn 90 to head back to obs
+			motorLeft(50);
+			osDelayUntil(500);
+			backRight(24);
+			HAL_Delay(800);
+			osDelayUntil(1000);
+			// Increasing speed for going back
+			SPEED = 3000;
+			// Tracking the border distance
+			IRguide = distanceRight;
+
+			// Straight back to obs
+			backToHome = 1;
+			IRLeftRight = 1;
+			forwardFlag = 0;
+			motorForward(450,1);
+			osDelayUntil(500);
+
+			// If my inner left IR trigger - means beside carpark on right side - need reverse and turn in
+			if(IRultra == 0){
+				motorBack(60);
+				motorLeft(40);
+				parkingFlag = 1;
+				motorForward(32,1);
+				motorRight(45);
+				SPEED = 1600;
+				parkingFlag = 1;
+				forwardFlag = 1;
+				motorForward(60,1);
+				motorStop();
+			}
+			// If Ultrasonic trigger, means reverse a bit and turn in
+			else{
+				// Decreasing speed to go into carpark
+				motorBack(40-distanceFront);
+				osDelayUntil(500);
+				motorLeft(35);
+				parkingFlag = 1;
+				motorForward(26,1);
+				motorRight(43);
+				HAL_Delay(500);
+				SPEED = 1600;
+				parkingFlag = 1;
+				forwardFlag = 1;
+				motorForward(300,1);
+				motorStop();
+				picFlag = 0;
+			}
+			// transmit a bit to rpi
+			HAL_UART_Transmit(&huart3, (uint8_t *) &rightTwoBuffer, 4, 0xFFFF);
+			htim1.Instance -> CCR4 = 149;
+		}
+		//sprintf(xyCoord, "X:%3d,Y:%3d\0", global_x, global_y);
+		//sprintf(xyCoord, "%2d%2d\0", global_x, global_y);
+		//HAL_UART_Transmit(&huart3, (uint8_t *) &xyCoord, 4, 0xFFFF);
+		// For checklist task
+		/*
+		if(magnitude == 0){
+			flag = 0;
+		}
+		else{
+			direction = 'x';
+		}*/
+
+		// Sending ack back to RPI to get them to send back the next instruction -- Task 1
+		// HAL_UART_Transmit(&huart3, (uint8_t *) &chBuffer, 2, 0xFFFF);
+		gyroStart();
+		HAL_Delay(1000);
+  	  }
+  	  osDelayUntil(100);
+  }
+  /* USER CODE END directionFunc */
+}
+
+/* USER CODE BEGIN Header_gyroFunc */
+/**
+* @brief Function implementing the gyroTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_gyroFunc */
+void gyroFunc(void *argument)
+{
+  /* USER CODE BEGIN gyroFunc */
+  /* Infinite loop */
+	// Angle buffer
+	char angle[30];
+	//uint8_t valx[2] = {0,0};
+	//uint8_t valy[2] = {0,0};
+	uint8_t valz[2] = {0,0};
+	//uint8_t valza[2] = {0,0};
+	/*
+	int16_t x_coorN = 0;
+	int16_t y_coorN = 0;
+	int16_t z_acclN = 0;
+
+	int16_t x_coor = 0;
+	int16_t y_coor = 0;
+	int16_t z_accl = 0;
+	*/
+	int16_t angular_speed = 0;
+	/*
+	int16_t angular_speedCurr = 0;
+	int16_t angular_rate = 0;
+	*/
+	uint32_t tick = 0;
+
+	// Initialize gyroscope
+	gyroInit();
+
+	// Get current time
+	tick = HAL_GetTick();
+
+	for(;;)
+	  {
+		  // Every 100 milisecs take reading
+		  if(HAL_GetTick() - tick >= 100){
+			  // Accelerometer reading from reg ACCEL_XOUT_H (x-axis accelerometer data)(not accurate/using)
+			  //readByte(0x2D, valx);
+			  // Accelerometer reading from reg ACCEL_YOUT_H (y-axis accelerometer data)(not accurate/using)
+			  //readByte(0x2F, valy);
+			  // Accelerometer reading from reg ACCEL_ZOUT_H (z-axis accelerometer data)
+			  //readByte(0x31, valza);
+			  // Gyroscope reading from reg GYRO_ZOUT_H (z-axis angle data) (yaw)
+			  readByte(0x37, valz);
+
+			  // Test DMP gyro reading
+			  // readByte(0x72, valza);
+			  /*
+			  x_coorN = (valx[0] << 8) | valx[1];
+			  y_coorN= (valy[0] << 8) | valy[1];
+			  z_acclN= (valza[0] << 8) | valza[1];
+
+
+			  int32_t accRawSigned[2];
+
+			  if ( (x_coorN & 0x00080000) == 0x00080000 )
+				  accRawSigned[0] = x_coorN | 0xFFF00000;
+			  else
+				  accRawSigned[0] = x_coorN;
+
+			  if ( (y_coorN & 0x00080000) == 0x00080000 )
+			    accRawSigned[1] = y_coorN | 0xFFF00000;
+			  else
+			    accRawSigned[1] = y_coorN;
+
+			  if ( (z_acclN & 0x00080000) == 0x00080000 )
+				accRawSigned[2] = z_acclN | 0xFFF00000;
+			  else
+				accRawSigned[2] = z_acclN;
+
+			  x_coor =(accRawSigned[0])*9.81f * 0.00006103515625f;
+			  y_coor =(accRawSigned[1])*9.81f * 0.00006103515625f;
+
+			  // angle derived from accelerometer value
+			  // z_accl =(accRawSigned[2]) * 0.00006103515625f;
+			  */
+			  // angle derived from gyroscope
+			  // Note - theres a gyro drift where it drifts to the right (angle decreases) by 1 degree every __ secs
+			  // My 90 degrees turn is 80 degrees read from the gyro so need to see what is urs
+			  angular_speed = (valz[0] << 8) | valz[1];
+			  // get rate of change for gyroscope value
+			  //angular_rate = (angular_speedCurr - angular_speedOld);
+
+			  //Get new angle value using sensor fusion
+			  //total_angle = (1 - 0.90) * (z_accl) + 0.90 * (total_angle + angular_rate*((HAL_GetTick() - tick)/16400.0));
+
+			  //angular_speedOld = angular_speedCurr;
+
+
+			  // gyro full scale set to +/-2000 dps (GYRO_FS_SEL=3), sensitivity scale factor = 16.4 LSB/dps
+			  // --> convert to ms so divide by 16400 instead
+			  // time taken to traverse angle = (Gettick - tick / sensitivity scale factor)
+			  // degree per sec = angleValue/total time to traverse the angle
+			  // Angle value + 0.5 * (1 tick is 10 000 ms --> time passed /
+
+			  if((double)(angular_speed)*((HAL_GetTick() - tick)/16400.0) > 0.2 || (double)(angular_speed)*((HAL_GetTick() - tick)/16400.0) < -0.2){
+				  total_angle +=(double)(angular_speed)*((HAL_GetTick() - tick)/16400.0);
+			  }
+
+			  // Go 1 round so reset angle
+			  if(total_angle >= 350){
+				  total_angle = 0;
+			  }
+			  if(total_angle <= -350){
+				  total_angle = 0;
+			  }
+			  sprintf(angle, "z%3d\0",(int)(total_angle));
+			  //sprintf(angle, "x:%2d,y:%2d,z%3d\0",(int) global_x, (int) global_y, (int)(total_angle));
+			  OLED_ShowString(40,20, angle);
+
+			  tick = HAL_GetTick();
+		  }
+		  osDelayUntil(10);
+
+	  }
+  /* USER CODE END gyroFunc */
+}
+
+/* trigUltrasonic function */
+void trigUltrasonic(void *argument)
+{
+  /* USER CODE BEGIN trigUltrasonic */
+	HAL_GPIO_WritePin(GPIOD,GPIO_PIN_13,1);
+	osDelayUntil(10);
+	HAL_GPIO_WritePin(GPIOD,GPIO_PIN_13,0);
+	__HAL_TIM_ENABLE_IT(&htim4, TIM_IT_CC1);
+  /* USER CODE END trigUltrasonic */
+}
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */

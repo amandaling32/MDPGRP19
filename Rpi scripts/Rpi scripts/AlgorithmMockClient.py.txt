@@ -1,0 +1,21 @@
+import socket
+
+from Config import LOCALE, ALGORITHM_SOCKET_BUFFER_SIZE, WIFI_IP, ALGO_PORT
+
+s = socket.socket()
+
+#port = 12345
+
+s.connect((WIFI_IP, ALGO_PORT))
+while True:
+    print(s.recv(1024).decode())
+    pass
+#s.send('client says hi!'.encode())
+
+s.send('algo client says hi!'.encode())
+print(s.recv(1024).decode())
+
+# print(s.recv(1024).decode())
+# print(s.recv(1024).decode())
+
+s.close()
